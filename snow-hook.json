@@ -1,0 +1,14 @@
+[
+  {
+    "id": "snow-hook",
+    "execute-command": "/snow-hook.py",
+    "command-working-directory": "/",
+    "pass-arguments-to-command":
+    [
+      {
+        "source": "entire-payload"
+      }
+    ]
+  }
+]
+
