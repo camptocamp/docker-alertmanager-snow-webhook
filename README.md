@@ -14,4 +14,4 @@ To configure the link to update the services in ServiceNow, you need the follwin
   password: <password>
 ```
 * the path to the yaml credentials file in environment variable `SNOW_API_PASSWORD_FILE`
-* alertmanager configured to send alerts with a "project" label and the ServiceNow `business_service` as value
+* alertmanager configured to send alerts with a "project" groupLabel (the label name is configurable with environment variale `ALERTMANAGER_LABEL_SNOW_ID`) and the ServiceNow `business_service` as value
