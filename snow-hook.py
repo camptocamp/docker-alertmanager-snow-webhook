@@ -5,18 +5,39 @@ import yaml
 import json
 import os
 import sys
+import logging
+import json_logging
+from datetime import datetime
 
-URL = os.environ['SNOW_API_URL']
 
-PASSWORD_FILE = os.environ['SNOW_API_PASSWORD_FILE']
+class CustomJSONLog(logging.Formatter):
+    # Customize JSON logs for ELK compatibility
 
-HEADERS = {"Content-Type":"application/json","Accept":"application/json"}
-LABEL_SERVICE_ID = os.environ.get('ALERTMANAGER_LABEL_SNOW_ID', 'project')
-LABEL_SERVICE_PRIORITY = os.environ.get('ALERTMANAGER_LABEL_SNOW_PRIORITY', 'snow_priority')
-try:
-    DEBUG = int(os.environ.get('DEBUG', '0'))
-except ValueError:
-    DEBUG = 0
+    def get_exc_fields(self, record):
+        if record.exc_info:
+            exc_info = self.format_exception(record.exc_info)
+        else:
+            exc_info = record.exc_text
+        return {'python.exc_info': exc_info}
+
+    @classmethod
+    def format_exception(cls, exc_info):
+        return ''.join(traceback.format_exception(*exc_info)) if exc_info else ''
+
+    def format(self, record):
+        json_log_object = {'@timestamp': datetime.utcnow().isoformat(),
+                           'level': record.levelname,
+                           'message': record.getMessage(),
+                           'env': os.environ['ENV']
+                           }
+        if hasattr(record, 'props'):
+            json_log_object['data'].update(record.props)
+
+        if record.exc_info or record.exc_text:
+            json_log_object['data'].update(self.get_exc_fields(record))
+
+        return json.dumps(json_log_object)
+
 
 def getPass(filename, service):
     username = None
@@ -30,40 +51,121 @@ def getPass(filename, service):
         return None
     return ( username, password )
 
-alertmanagerdata = json.loads(sys.argv[1])
+
+# Setup logging
+json_logging.ENABLE_JSON_LOGGING = True
+json_logging.__init(custom_formatter=CustomJSONLog)
+# json_logging.init_non_web()
+logger = logging.getLogger('json-logger')
+try:
+    DEBUG = int(os.environ.get('DEBUG', '0'))
+except ValueError:
+    DEBUG = 0
 if DEBUG:
-    print("[DEBUG] alertmanagerdata : %s" % alertmanagerdata)
+    logger.setLevel(logging.DEBUG)
+else:
+    logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler(sys.stdout))
+
+
+URL = os.environ['SNOW_API_URL']
+STATUS_URL = os.environ['SNOW_API_STATUS_URL']
+PASSWORD_FILE = os.environ['SNOW_API_PASSWORD_FILE']
+LABEL_SERVICE_ID = os.environ.get('ALERTMANAGER_LABEL_SNOW_ID', 'project')
+LABEL_SERVICE_COMPONENT = os.environ.get('ALERTMANAGER_LABEL_SNOW_COMPONENT', 'snow_component')
+
+HEADERS = {'Content-Type': 'application/json',
+           'Accept': 'application/json'}
+
+
+alertmanagerdata = json.loads(sys.argv[1])
+
+try:
+    service_id = alertmanagerdata['groupLabels'][LABEL_SERVICE_ID]
+except KeyError as e:
+    logger.error('Could not retrieve the service identifier : {}'.format(e))
+    sys.exit(1)
+
+auth = getPass(PASSWORD_FILE, service_id)
+if auth == None:
+    logger.error(f'No entry in password file for service "{service_id}"')
+    sys.exit(1)
+
+nb_alerts = len(alertmanagerdata['alerts'])
+logger.debug(f'Handling {nb_alerts} alerts for service_id {service_id}')
+
+# Does we have firing alerts
+url = '{}/{}'.format(STATUS_URL, service_id)
+response = requests.get(url, auth=auth, headers=HEADERS)
+logger.debug(f'Retrieved ServiceNow firing alerts : {response.status_code} : {response.content}')
+if response.status_code != 200:
+    logger.error(f'Could not get status when requesting url "{url}"')
+    sys.exit(1)
+
+response_data = json.loads(response.text)
+existing_alerts = len(response_data['results'])
+logger.debug(f'There is/are {existing_alerts} registered alerts in ServiceNow')
 
 priority = 1
 state = 'Down'
-if LABEL_SERVICE_PRIORITY in alertmanagerdata['commonLabels'].keys():
-    priority = alertmanagerdata['commonLabels'][LABEL_SERVICE_PRIORITY]
-if alertmanagerdata['status'] == 'resolved':
+show_component = False
+component = ''
+nb_firing = 0
+
+# Build the components string and determines the priority.
+# The components is only shown in the outage description if the snow_component label exist.
+#
+# SNow Priorities
+# 1 for new alerts
+# 2 for degradation
+# 6 to change description
+# 5 to release an alert
+#
+# The priority can be superseded by the one specified in the 'snow_priority" label. We must be able
+# to set it differently in case of a degradation.
+#
+# The alert description has to be modified when we want to specifiy the component(s) in the outage
+# alert must not be released when we have firing alerts for multi-components outage.
+#
+component = ' ('
+snow_priority = 0
+for alert in alertmanagerdata['alerts']:
+    if 'status' in alert and alert['status'] == 'firing':
+        nb_firing += 1
+        if 'snow_component' in alert['labels']:
+            show_component = True
+            component = component + alert['labels']['snow_component'] + ', '
+        if 'snow_priority' in alert['labels']:
+            snow_priority = int(alert['labels']['snow_priority'])
+
+if 'snow_component' in alert['labels']:
+    component = component[:-2] + ')'
+
+if not show_component:
+    component = ''
+
+logger.debug(f'Alertmanager have triggered {nb_alerts} alerts and {nb_firing} is/are firing, global status is {alertmanagerdata["status"]}')
+
+if nb_firing >= 1:
+    priority = 1
+    state = 'Down'
+    if snow_priority == 2:  # degraded
+        priority = snow_priority
+        state = 'Degraded'
+    if show_component and existing_alerts != 0:
+        priority = 6
+else:
     priority = 5
     state = 'Up'
 
-if DEBUG:
-    print("[DEBUG] priority : %s" %priority)
-    print("[DEBUG] state : %s" %state)
+description = 'Automatic Service{} {} via Camptocamp Monitoring.'.format(component, state)
 
-description = 'Automatic Service {} via Camptocamp Monitoring.'.format(state)
-
-if DEBUG:
-    print("[DEBUG] description : %s" % description)
-
-data = {
-        "u_business_service" : alertmanagerdata['groupLabels'][LABEL_SERVICE_ID],
-        "u_priority" : priority,
-        "u_short_description" : description,
-        "u_description" : description,
-}
-auth = getPass(PASSWORD_FILE, data['u_business_service'])
-if auth == None:
-    print('no entry in password file for service "' + data['u_business_service'] + '"')
-    sys.exit(1)
-
+data = {'u_business_service' : service_id,
+        'u_priority' : priority,
+        'u_short_description' : description,
+        'u_description' : description}
+logger.info(f'Sending alert to ServiceNow for "{service_id}" with priority "{priority}/{state}" and description "{description}"')
 response = requests.post(URL, auth=auth, headers=HEADERS, data=json.dumps(data).strip())
-if DEBUG:
-    print("[DEBUG] response : %s" % response)
+logger.debug("Sending alert done : {} : {}".format(response.status_code, response.content))
 
-print("ServiceNow returned %s" % response.status_code)
+logger.info("ServiceNow returned {}".format(response.status_code))

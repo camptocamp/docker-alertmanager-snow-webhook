@@ -1,4 +1,4 @@
-FROM debian:stretch
+FROM debian:buster
 
 EXPOSE 9000
 
@@ -9,9 +9,10 @@ ENV RELEASE=stretch \
     WEBHOOK_VERSION=2.6.8
 
 RUN apt-get update \
-  && apt-get install -y make python3 python3-requests python3-yaml \
+  && apt-get install -y make python3 python3-requests python3-yaml python3-pip \
   && apt-get clean \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && pip3 install json-logging
 
 COPY snow-hook.json /etc/webhook/snow-hook.json
 COPY snow-hook.py /snow-hook.py
