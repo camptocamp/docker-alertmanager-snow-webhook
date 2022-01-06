@@ -86,7 +86,7 @@ except KeyError as e:
     logger.error('Could not retrieve the service identifier : {}'.format(e))
     sys.exit(1)
 
-auth = getPass(PASSWORD_FILE, service_id)
+auth = getPass(PASSWORD_FILE, service_id.upper())
 if auth == None:
     logger.error(f'No entry in password file for service "{service_id}"')
     sys.exit(1)
