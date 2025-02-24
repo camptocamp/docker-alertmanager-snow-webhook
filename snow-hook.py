@@ -71,7 +71,7 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 URL = os.environ['SNOW_API_URL']
 STATUS_URL = os.environ['SNOW_API_STATUS_URL']
 PASSWORD_FILE = os.environ['SNOW_API_PASSWORD_FILE']
-LABEL_SERVICE_ID = os.environ.get('ALERTMANAGER_LABEL_SNOW_ID', 'project')
+LABEL_SERVICE_ID = os.environ.get('ALERTMANAGER_LABEL_SNOW_ID', 'service_id')
 LABEL_SERVICE_COMPONENT = os.environ.get('ALERTMANAGER_LABEL_SNOW_COMPONENT', 'snow_component')
 
 HEADERS = {'Content-Type': 'application/json',
@@ -103,8 +103,16 @@ if response.status_code != 200:
     sys.exit(1)
 
 response_data = json.loads(response.text)
+# Counts the number of alerts
 existing_alerts = len(response_data['results'])
-logger.debug(f'There is/are {existing_alerts} registered alerts in ServiceNow')
+existing_incidents = 0
+existing_degradations = 0
+for existing_alert in response_data['results']:
+    if existing_alert['outageType'] == 'Panne':
+        existing_incidents += 1
+    else :
+        existing_degradations += 1
+logger.debug(f'There is/are {existing_alerts} ({existing_incidents} incidents, {existing_degradations} degradations) registered alerts in ServiceNow')
 
 priority = 1
 state = 'Down'
@@ -115,7 +123,7 @@ nb_firing = 0
 # Build the components string and determines the priority.
 # The components is only shown in the outage description if the snow_component label exist.
 #
-# SNow Priorities
+# Snow Priorities
 # 1 for new alerts
 # 2 for degradation
 # 6 to change description
@@ -128,15 +136,19 @@ nb_firing = 0
 # alert must not be released when we have firing alerts for multi-components outage.
 #
 component = ' ('
-snow_priority = 0
+snow_priority = 9
 for alert in alertmanagerdata['alerts']:
     if 'status' in alert and alert['status'] == 'firing':
         nb_firing += 1
         if 'snow_component' in alert['labels']:
             show_component = True
-            component = component + alert['labels']['snow_component'] + ', '
+            if component.find(alert['labels']['snow_component']) == -1:
+                component = component + alert['labels']['snow_component'] + ', '
         if 'snow_priority' in alert['labels']:
-            snow_priority = int(alert['labels']['snow_priority'])
+            tmp = int(alert['labels']['snow_priority'])
+            if tmp < snow_priority :
+                # keep the highest priority (smaller value)
+                snow_priority = tmp
 
 if 'snow_component' in alert['labels']:
     component = component[:-2] + ')'
@@ -152,7 +164,8 @@ if nb_firing >= 1:
     if snow_priority == 2:  # degraded
         priority = snow_priority
         state = 'Degraded'
-    if show_component and existing_alerts != 0:
+    priority_changes = (snow_priority == 2 and existing_incidents != 0) or (snow_priority == 1 and existing_degradations != 0)
+    if show_component and existing_alerts != 0 and not priority_changes:
         priority = 6
 else:
     priority = 5
