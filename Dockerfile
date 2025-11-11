@@ -1,4 +1,4 @@
-FROM debian:buster
+FROM debian:trixie
 
 EXPOSE 9000
 
@@ -11,8 +11,7 @@ ENV RELEASE=stretch \
 RUN apt-get update \
   && apt-get install -y make python3 python3-requests python3-yaml python3-pip \
   && apt-get clean \
-  && rm -rf /var/lib/apt/lists/* \
-  && pip3 install json-logging
+  && rm -rf /var/lib/apt/lists/*
 
 COPY snow-hook.json /etc/webhook/snow-hook.json
 COPY snow-hook.py /snow-hook.py

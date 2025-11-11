@@ -5,45 +5,14 @@ import yaml
 import json
 import os
 import sys
-import logging
-import json_logging
 from datetime import datetime
-
-
-class CustomJSONLog(logging.Formatter):
-    # Customize JSON logs for ELK compatibility
-
-    def get_exc_fields(self, record):
-        if record.exc_info:
-            exc_info = self.format_exception(record.exc_info)
-        else:
-            exc_info = record.exc_text
-        return {'python.exc_info': exc_info}
-
-    @classmethod
-    def format_exception(cls, exc_info):
-        return ''.join(traceback.format_exception(*exc_info)) if exc_info else ''
-
-    def format(self, record):
-        json_log_object = {'@timestamp': datetime.utcnow().isoformat(),
-                           'level': record.levelname,
-                           'message': record.getMessage(),
-                           'env': os.environ['ENV']
-                           }
-        if hasattr(record, 'props'):
-            json_log_object['data'].update(record.props)
-
-        if record.exc_info or record.exc_text:
-            json_log_object['data'].update(self.get_exc_fields(record))
-
-        return json.dumps(json_log_object)
 
 
 def getPass(filename, service):
     username = None
     password = None
     with open(filename) as f:
-        passdata = yaml.load(f)
+        passdata = yaml.safe_load(f)
         if service in passdata:
             username = passdata[service].get('username', None)
             password = passdata[service].get('password', None)
@@ -52,21 +21,23 @@ def getPass(filename, service):
     return ( username, password )
 
 
-# Setup logging
-json_logging.ENABLE_JSON_LOGGING = True
-json_logging.__init(custom_formatter=CustomJSONLog)
-# json_logging.init_non_web()
-logger = logging.getLogger('json-logger')
+def log_info(message):
+    print('INFO : {}'.format(message), file=sys.stdout)
+
+
+def log_error(message):
+    print('ERROR : {}'.format(message), file=sys.stderr)
+
+
+def log_debug(message):
+    if DEBUG:
+        print('DEBUG : {}'.format(message), file=sys.stdout)
+
+
 try:
     DEBUG = int(os.environ.get('DEBUG', '0'))
 except ValueError:
     DEBUG = 0
-if DEBUG:
-    logger.setLevel(logging.DEBUG)
-else:
-    logger.setLevel(logging.INFO)
-logger.addHandler(logging.StreamHandler(sys.stdout))
-
 
 URL = os.environ['SNOW_API_URL']
 STATUS_URL = os.environ['SNOW_API_STATUS_URL']
@@ -83,24 +54,24 @@ alertmanagerdata = json.loads(sys.argv[1])
 try:
     service_id = alertmanagerdata['groupLabels'][LABEL_SERVICE_ID]
 except KeyError as e:
-    logger.error('Could not retrieve the service identifier : {}'.format(e))
+    log_error('Could not retrieve the service identifier : {}'.format(e))
     sys.exit(1)
 
 service_id = service_id.upper()
 auth = getPass(PASSWORD_FILE, service_id)
 if auth == None:
-    logger.error(f'No entry in password file for service "{service_id}"')
+    log_error('No entry in password file for service "{}"'.format(service_id))
     sys.exit(1)
 
 nb_alerts = len(alertmanagerdata['alerts'])
-logger.debug(f'Handling {nb_alerts} alerts for service_id {service_id}')
+log_debug('Handling {} alerts for service_id {}'.format(nb_alerts, service_id))
 
 # Does we have firing alerts
 url = '{}/{}'.format(STATUS_URL, service_id)
 response = requests.get(url, auth=auth, headers=HEADERS)
-logger.debug(f'Retrieved ServiceNow firing alerts : {response.status_code} : {response.content}')
+log_debug('Retrieved ServiceNow firing alerts : {} : {}'.format(response.status_code, response.content))
 if response.status_code != 200:
-    logger.error(f'Could not get status when requesting url "{url}"')
+    log_error('Could not get status when requesting url "{}"'.format(url))
     sys.exit(1)
 
 response_data = json.loads(response.text)
@@ -113,7 +84,7 @@ for existing_alert in response_data['results']:
         existing_incidents += 1
     else :
         existing_degradations += 1
-logger.debug(f'There is/are {existing_alerts} ({existing_incidents} incidents, {existing_degradations} degradations) registered alerts in ServiceNow')
+log_debug('There is/are {} ({} incidents, {} degradations) registered alerts in ServiceNow'.format(existing_alerts, existing_incidents, existing_degradations))
 
 priority = 1
 state = 'Down'
@@ -157,7 +128,7 @@ if 'snow_component' in alert['labels']:
 if not show_component:
     component = ''
 
-logger.debug(f'Alertmanager have triggered {nb_alerts} alerts and {nb_firing} is/are firing, global status is {alertmanagerdata["status"]}')
+log_debug('Alertmanager have triggered {} alerts and {} is/are firing, global status is {}'.format(nb_alerts, nb_firing, alertmanagerdata["status"]))
 
 if nb_firing >= 1:
     priority = 1
@@ -178,8 +149,8 @@ data = {'u_business_service' : service_id,
         'u_priority' : priority,
         'u_short_description' : description,
         'u_description' : description}
-logger.info(f'Sending alert to ServiceNow for "{service_id}" with priority "{priority}/{state}" and description "{description}"')
+log_info('Sending alert to ServiceNow for "{}" with priority "{}/{}" and description "{}"'.format(service_id, priority, state, description))
 response = requests.post(URL, auth=auth, headers=HEADERS, data=json.dumps(data).strip())
-logger.debug("Sending alert done : {} : {}".format(response.status_code, response.content))
+log_debug("Sending alert done : {} : {}".format(response.status_code, response.content))
 
-logger.info("ServiceNow returned {}".format(response.status_code))
+log_info("ServiceNow returned {}".format(response.status_code))
