@@ -14,8 +14,8 @@ def getPass(filename, service):
     with open(filename) as f:
         passdata = yaml.safe_load(f)
         if service in passdata:
-            username = passdata[service].get('username', None)
-            password = passdata[service].get('password', None)
+            username = passdata[service].get('username', None).strip()
+            password = passdata[service].get('password', None).strip()
     if username == None or password == None:
         return None
     return ( username, password )
